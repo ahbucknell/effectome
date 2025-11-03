@@ -1,0 +1,51 @@
+---
+title: "Clustering of structural phylogeny"
+---
+
+```{r}
+library(ape)
+library(pvclust)
+tree_path <- file.path(path.expand('~'), "oneDrive", "projects", "effectome", "datasets", "50_avg-pLDDT_rooted.nwk")
+tree <- ladderize(read.tree(tree_path))
+```
+
+```{r}
+
+# Method 1: Cut tree by removing edges at specific depth
+# Get all internal node depths
+node_depths <- node.depth.edgelength(tree)
+internal_nodes <- (length(tree$tip.label) + 1):max(tree$edge)
+
+cut_depth <- quantile(node_depths[internal_nodes], 0.015)  # adjust percentile
+
+# Extract subtrees at this depth
+# Find nodes at approximately this depth
+nodes_to_cut <- internal_nodes[abs(node_depths[internal_nodes] - cut_depth) < 0.01]
+
+# Create groups based on descendants of these nodes
+tree_groups <- rep(0, length(tree$tip.label))
+names(tree_groups) <- tree$tip.label
+
+for(i in seq_along(nodes_to_cut)) {
+  descendants <- Descendants(tree, nodes_to_cut[i], type = "tips")[[1]]
+  if(length(descendants) > 0) {
+    tree_groups[tree$tip.label[descendants]] <- i
+  }
+}
+
+# Assign ungrouped tips
+tree_groups[tree_groups == 0] <- max(tree_groups) + 1
+
+# Visualize
+library(ggtree)
+tip_data <- data.frame(
+  label = names(tree_groups),
+  cluster = as.factor(tree_groups)
+)
+
+ggtree(tree) %<+% tip_data +
+  geom_tippoint(aes(color = cluster), size = 3) +
+  geom_tiplab(aes(color = cluster), size = 3, hjust = -0.1) +
+  theme(legend.position = "right")
+```
+

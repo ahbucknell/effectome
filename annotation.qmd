@@ -1,0 +1,112 @@
+---
+title: "Annotating structural phylogeny"
+---
+This analysis attempts to annotate a structural phylogeny tree of _Magnaporthe oryzae_ effectors. The tree was generated using FoldTree, using a pre-filtered list of Meps.
+### Setup
+Currently I'm visualising the tree using ITOL, and therefore am saving annotation datasets as `.txt` files to upload. ITOL annotation files use a custom header depending on the annotation type. Below outlines header generation function depending on the annotation type (binary or colour-scale).
+```{r}
+library(ape)
+
+binary_header <- function(label, colour){
+    header <- sprintf(
+        "DATASET_BINARY
+        SEPARATOR,COMMA
+        DATASET_LABEL,%s
+        COLOR,%s
+        FIELD_LABELS,%s
+        FIELD_COLORS,%s
+        FIELD_SHAPES,5
+        HEIGHT_FACTOR,2.5
+        MARGIN,30
+        DATA",
+        label, colour, label, colour
+    )
+    # Remove excess whitespace from header
+    header_lines <- strsplit(header, "\n")[[1]]
+    fmtd_lines <- trimws(header_lines)
+    # Reconstruct the header with the formatted lines
+    fmtd_header <- paste(fmtd_lines, collapse = "\n")
+    return(fmtd_header)
+}
+
+cs_header <- function(name, shapes, colours, labels){
+    header <- sprintf(
+        "DATASET_COLORSTRIP
+        SEPARATOR,COMMA
+        STRIP_WIDTH, 50
+        DATASET_LABEL,%s
+        LEGEND_TITLE,%s
+        LEGEND_SHAPES,%s
+        LEGEND_COLORS,%s
+        LEGEND_LABELS,%s
+        LEGEND_GRADIENT,1
+        DATA",
+        name, name, shapes, colours, labels
+    )
+    # Remove excess whitespace from header
+    header_lines <- strsplit(header, "\n")[[1]]
+    fmtd_lines <- trimws(header_lines, which = "left")
+    # Reconstruct the header with the formatted lines
+    fmtd_header <- paste(fmtd_lines, collapse = "\n")
+    return(fmtd_header)
+}
+```
+
+### Tree nodes
+The below section reads the Newick tree as input and generates a map dataframe between MGG and the unique prefix ID appended during AlphaFold2 structural prediction.
+```{r}
+dir <- file.path(path.expand('~'), "oneDrive", "projects", "effectome", "datasets")
+tree <- ladderize(read.tree(file.path(dir, "50_avg-pLDDT_rooted.nwk")))
+nodes <- tree$tip.label
+# Below regex matches any number of 0-9 followed by "_" only at the start of the string.
+tree_map <- data.frame(
+    node = nodes,
+    mgg = sub("^[0-9]+_", "", nodes)
+)
+```
+
+### MAX effectors
+This section just identifies known and predicted MAX effectors within the dataset used in the phylogeny.
+```{r}
+#max_mgg contains duplicates, but max_mgg_tree only returns unique values intersecting.
+max_mgg <- read.csv(file.path(dir, "MAX_MGG.csv"), header = FALSE)$V1
+max_mgg_tree <- intersect(max_mgg, tree_map$mgg)
+max_nodes <- tree_map$node[tree_map$mgg %in% max_mgg_tree]
+max_colour <- rgb(194, 106, 119, maxColorValue = 255)
+out_max_path <- file.path(dir, "MAX.itol.txt")
+writeLines(binary_header("MAX", max_colour), out_max_path)
+write(paste(max_nodes, 1, sep = ","), file = out_max_path, append = TRUE)
+```
+
+### Foldseek
+We want to annotate the tree with best Foldseek match (lowest E-value) for each structure. In some cases a structure can have two matches with the same E-value, in such a scenario it doesn't matter which is kept for the annotation as only the E-value is shown.
+```{r}
+library(dplyr)
+foldseek_path <- file.path(dir, "foldseek.tsv")
+foldseek <- read.csv(foldseek_path, header = FALSE, sep = "\t")
+
+# top_hits filters hits to minimum E-value per MGG
+top_hits <- foldseek %>%
+  group_by(V1) %>%
+  slice_min(order_by = V11, n = 1)
+tree_hits <- subset(top_hits, V1 %in% nodes)
+tree_hits <- tree_hits[!duplicated(tree_hits$V1),]
+sig_levels <- c(-Inf, 1e-10, 1e-2, Inf)
+fs_labs <- c("N/A", "> 1e-2", "1e-2  > x > 1e-10", "< 1e-10")
+fs_colours <- c("#fde0dd", "#fa9fb5", "#dd3497")
+# findInterval() returns category 1, 2, or 3 (1 - lowest, 3 - highest)
+foldseek_data <- data.frame(
+    node = tree_hits$V1,
+    colour = findInterval(tree_hits$V11, sig_levels, rightmost.closed = TRUE)
+)
+foldseek_data$colour <- fs_colours[foldseek_data$colour]
+fs_str_colours <- paste(append(fs_colours, "#ffffff", after = 0), collapse = ",")
+out_fs_path <- file.path(dir, "foldseek.itol.txt")
+writeLines(cs_header("E-value",
+           paste(rep(1, length(fs_labs)), collapse = ","),
+           fs_str_colours,
+           paste(fs_labs, collapse = ",")), out_fs_path)
+write.table(foldseek_data, file = out_fs_path, sep = ",", quote = FALSE,
+            row.names = FALSE, col.names = FALSE, append = TRUE)
+```
+

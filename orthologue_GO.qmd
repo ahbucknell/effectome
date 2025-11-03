@@ -1,0 +1,104 @@
+---
+title: "Analysis GO terms of structural orthologues"
+engine: julia
+---
+IBM colour scheme.
+
+```{julia}
+using CSV, DataFrames, PhyloNetworks
+dir = expanduser(joinpath("~", "oneDrive", "projects", "effectome", "datasets"))
+fsRaw = CSV.read(joinpath(dir, "foldseek.tsv"), DataFrame, delim = "\t", header = false)
+sort!(fsRaw, :Column11)
+grpByMGG = groupby(fsRaw, :Column1)
+topHits = combine(first, grpByMGG)
+
+tree = readnewick(joinpath(dir, "50_avg-pLDDT_rooted.nwk"))
+nodes = tiplabels(tree)
+filter!(row -> row.Column1 in nodes, topHits)
+pdb = uppercase.(getindex.(split.(topHits.Column2, "-"),1))
+```
+
+```{julia}
+using HTTP, JSON3
+
+function checkObsoleteID(pdbID)
+    url = "https://www.rcsb.org/structure/removed/$pdbID"
+    body = try
+        response = HTTP.get(url)
+        body = String(response.body)
+    catch err
+        println("Could not access the page. Error: $err")
+        return nothing
+    end
+    if !isnothing(body)
+        m = match(r"\/structure\/[A-Z0-9]+", body)
+        newPDB = split(m.match , "/")[end]
+        println("$pdbID is obselete. New PDB ID is: $newPDB")
+        return newPDB
+    else
+        return nothing
+    end
+end
+
+function pdbToUniprot(pdbID)
+    url = "https://data.rcsb.org/rest/v1/core/polymer_entity/$pdbID/1"
+    try
+        response = HTTP.get(url)
+        body = JSON3.read(String(response.body))
+        allIdentifiers = body.rcsb_polymer_entity_container_identifiers
+        if :uniprot_ids in collect(keys(allIdentifiers))
+            return allIdentifiers.uniprot_ids
+        else
+            println("$pdbID has no associated UniProt ID")
+            return nothing
+        end
+    catch err
+        println("API fetch failed for $pdbID\nChecking if obsolete...")
+        tmp = checkObsoleteID(pdbID)
+        pdbToUniprot(tmp)
+    end
+end
+
+uniprotIDs = Dict()
+for elem in pdb
+    tmpIDs = pdbToUniprot(elem)
+    uniprotIDs[elem] = tmpIDs
+end
+```
+
+```{julia}
+using CairoMakie, Colors
+
+missingEntries = length(filter(x -> isnothing(last(x)), uniprotIDs))
+entries = length(uniprotIDs) - missingEntries
+
+println("Entries: $entries")
+println("Missing entries: $missingEntries")
+
+barplot([1,2], [entries, missingEntries],
+        axis = (xticks = ([1,2],["Associated", "Missing"]),
+                xlabel = "UniProt IDs", ylabel = "Count", aspect = 1),
+        color = [colorant"rgb(100,143,255)", colorant"rgb(220,38,127)"],
+        strokewidth = 1)
+```
+
+```{julia}
+function uniprotToGO(uniprotID)
+    url = "https://rest.uniprot.org/uniprotkb/$uniprotID.json"
+    try
+        response = HTTP.get(url, ["Accept-Encoding" => "identity"])
+        body = JSON3.read(String(response.body))
+        crossRefs = body.uniProtKBCrossReferences
+        tmpGOs = []
+        for x in crossRefs
+            if x.database == "GO"
+                push!(tmpGOs, x.id)
+            end
+        end
+        println(tmpGOs)
+    catch
+    end
+end
+
+uniprotToGO("O95995")
+```
