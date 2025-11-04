@@ -2,6 +2,7 @@
 title: "Analysis GO terms of structural orthologues"
 engine: julia
 ---
+
 IBM colour scheme.
 
 ```{julia}
@@ -15,7 +16,7 @@ topHits = combine(first, grpByMGG)
 tree = readnewick(joinpath(dir, "50_avg-pLDDT_rooted.nwk"))
 nodes = tiplabels(tree)
 filter!(row -> row.Column1 in nodes, topHits)
-pdb = uppercase.(getindex.(split.(topHits.Column2, "-"),1))
+pdb = unique(uppercase.(getindex.(split.(topHits.Column2, "-"),1)))
 ```
 
 ```{julia}
@@ -55,7 +56,11 @@ function pdbToUniprot(pdbID)
     catch err
         println("API fetch failed for $pdbID\nChecking if obsolete...")
         tmp = checkObsoleteID(pdbID)
-        pdbToUniprot(tmp)
+        if !isnothing(tmp)
+            pdbToUniprot(tmp)
+        else
+            return nothing
+        end
     end
 end
 
@@ -64,23 +69,20 @@ for elem in pdb
     tmpIDs = pdbToUniprot(elem)
     uniprotIDs[elem] = tmpIDs
 end
+
 ```
 
-```{julia}
-using CairoMakie, Colors
+Given our list of PDB IDs, we want to find the associated UniProt ID(s) for each PDB ID. We're achieving this through the `pdbToUniprot` function which utilises the PDB's REST API to query each PDB ID individually. There are four possible outcomes:
 
-missingEntries = length(filter(x -> isnothing(last(x)), uniprotIDs))
-entries = length(uniprotIDs) - missingEntries
+1. The PDB ID is found in the PDB, and there is/are associated UniProt ID(s). The return is a vector of the UniProt ID(s).
 
-println("Entries: $entries")
-println("Missing entries: $missingEntries")
+2. The PDB ID is found in the PDB, but there are no associated UniProt IDs. Most likely due to the PDB entry being a synthetic structure not found in nature. The return is `nothing`.
 
-barplot([1,2], [entries, missingEntries],
-        axis = (xticks = ([1,2],["Associated", "Missing"]),
-                xlabel = "UniProt IDs", ylabel = "Count", aspect = 1),
-        color = [colorant"rgb(100,143,255)", colorant"rgb(220,38,127)"],
-        strokewidth = 1)
-```
+3. The PDB ID is **not** found in the PDB, most likely because it is obsolete. The `checkObsoleteID` function is run returning the new PDB ID to run `pdbToUniprot` on.
+
+4. The PDB ID is **not** found in the PDB. The `checkObsoleteID` function is run, but no new PDB ID can be found. The return is `nothing`.
+
+It's worth noting that currently the best way to query the failed associations is through filtering by `nothing`, however this will lump those failing by outcome 2 and 4 together. In this dataset, outcome 4 does not occur (AFAIK) so there is no need to alter the function. However, you might want to alter the `pdbToUniprot` and `checkObsoleteID` functions to split them if you see significant failures by both outcomes.
 
 ```{julia}
 function uniprotToGO(uniprotID)
@@ -95,10 +97,72 @@ function uniprotToGO(uniprotID)
                 push!(tmpGOs, x.id)
             end
         end
-        println(tmpGOs)
-    catch
+        return tmpGOs
+    catch err
+        println("API fetch failed for $uniprotID")
+        return nothing
     end
 end
 
-uniprotToGO("O95995")
+goTerms = Dict()
+
+# uniprotIDs is a PDB:UniProt dictionary, with nothing as some values.
+# We need to filter the nothing values out for input into uniprotToGO()
+uniprots = filter(x -> !isnothing(last(x)), uniprotIDs)
+
+for x in uniprots
+    tmpGOs = []
+    for y in last(x)
+        tmp = uniprotToGO(y)
+        if !isnothing(tmp)
+            append!(tmpGOs, tmp)
+        else
+            tmpGOs = nothing
+        end
+    end
+    goTerms[first(x)] = tmpGOs
+end
+```
+
+Here, we're finding all associated GO terms for each UniProt ID through the `uniprotToGO` function. There are three possible outcomes:
+
+1. The UniProt ID is found in UniProtKB, and there are associated GO terms. The return is a vector of GO terms.
+
+2. The UniProt ID is found in the UniProtKB, but there are **no** associated GO terms. The return is a zero-length vector.
+
+3. The UniProt ID is **not** found in the UniProtKB, most likely as it's no longer annotated. The return is `nothing`.
+
+The final output here is the `goTerms` dictionary, which links PDB ID (key) to an array of associated GO terms (value). In the case of multiple UniProt IDs, more than one outcome can be true at once. So if the first UniProt ID had associated GO terms but the second didn't, then the return is an array of just the GO terms from the first ID. Similarily, if the first UniProt ID had associated GO terms but the second was deleted from UniProtKB then the return is an array of GO terms including a `nothing` element.
+
+```{julia}
+using CairoMakie, Colors
+
+IDAfig = Figure()
+
+# Total unique PDB IDs
+totalPDB = length(pdb)
+# PDB IDs without associated UniProt IDs
+totalWoUniprot = length(filter(x -> isnothing(last(x)), uniprotIDs))
+# PDB IDs with associated UniProt IDs that have been removed from UniProtKB
+totalDelUniprot
+# PDB IDs with associated UniProt IDs
+totalWithUniprot
+
+nothingCount = sum([count(isnothing, x) for x in values(goTerms)])
+
+IDAplotData = (x = [],
+               y = [],
+               z = [])
+
+barplot([1,2], [length(uniprotIDs), length(uniprotMissing)],
+        axis = (xticks = ([1,2],["Associated", "Missing"]),
+                xlabel = "UniProt IDs associated to PDB", ylabel = "Count", aspect = 1),
+        color = [colorant"rgb(100,143,255)", colorant"rgb(220,38,127)"],
+        strokewidth = 1)
+```
+
+
+
+```{julia}
+filter(x -> isnothing(last(x)), goTerms)
 ```
