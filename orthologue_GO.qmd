@@ -3,8 +3,6 @@ title: "Analysis GO terms of structural orthologues"
 engine: julia
 ---
 
-IBM colour scheme.
-
 This analysis focuses on extracting GO terms from PDB entries identified as structural orthologues of a Mep through Foldseek. It uses REST APIs to:
 
 1. Gather all UniProt IDs associated with a PDB entry, and resolves obsolete PDB entries.
@@ -13,11 +11,16 @@ This analysis focuses on extracting GO terms from PDB entries identified as stru
 
 3. Gathers metadata (description + aspect) of each GO term.
 
-
-
 ## Setup
 ```{julia}
-using CSV, DataFrames, PhyloNetworks
+using Pkg
+Pkg.activate(@__DIR__)
+Pkg.instantiate()
+using CSV, DataFrames, PhyloNetworks, HTTP, JSON3, StatsBase, CairoMakie
+```
+
+## Filtering PDBs
+```{julia}
 dir = expanduser(joinpath("~", "oneDrive", "projects", "effectome", "datasets"))
 fsRaw = CSV.read(joinpath(dir, "foldseek.tsv"), DataFrame, delim = "\t", header = false)
 sort!(fsRaw, :Column11)
@@ -28,12 +31,11 @@ tree = readnewick(joinpath(dir, "50_avg-pLDDT_rooted.nwk"))
 nodes = tiplabels(tree)
 filter!(row -> row.Column1 in nodes, topHits)
 pdb = unique(uppercase.(getindex.(split.(topHits.Column2, "-"),1)))
+println(length(pdb), " PDB IDs found.")
 ```
 
 ## Obtaining UniProt IDs from PDB ID
 ```{julia}
-using HTTP, JSON3
-
 function checkObsoleteID(pdbID)
     url = "https://www.rcsb.org/structure/removed/$pdbID"
     body = try
@@ -76,12 +78,13 @@ function pdbToUniprot(pdbID)
     end
 end
 
-uniprotIDs = Dict()
+uniprotDict = Dict()
 for elem in pdb
     tmpIDs = pdbToUniprot(elem)
-    uniprotIDs[elem] = tmpIDs
+    uniprotDict[elem] = tmpIDs
 end
-
+missingUniprot = filter(x -> isnothing(last(x)), uniprotDict)
+filter!(x -> !isnothing(last(x)), uniprotDict)
 ```
 
 Given our list of PDB IDs, we want to find the associated UniProt ID(s) for each PDB ID. We're achieving this through the `pdbToUniprot` function which utilises the PDB's REST API to query each PDB ID individually. There are four possible outcomes:
@@ -96,7 +99,18 @@ Given our list of PDB IDs, we want to find the associated UniProt ID(s) for each
 
 It's worth noting that currently the best way to query the failed associations is through filtering by `nothing`, however this will lump those failing by outcome 2 and 4 together. In this dataset, outcome 4 does not occur (AFAIK) so there is no need to alter the function. However, you might want to alter the `pdbToUniprot` and `checkObsoleteID` functions to split them if you see significant failures by both outcomes.
 
+## Exporting UniProt IDs to CSV
+```{julia}
+uniprotDF = DataFrame(
+    pdb = [key for (key, val) in uniprotDict for x in val],
+    uniprot = collect(Iterators.flatten(values(uniprotDict)))
+)
+uniprotPath = joinpath(@__DIR__, "_output", "data", "structural_orthologues_Uniprot_IDs.csv")
+CSV.write(uniprotPath, uniprotDF)
+```
+
 ## Obtaining GO terms from UniProt ID
+
 ```{julia}
 function uniprotToGO(uniprotID)
     url = "https://rest.uniprot.org/uniprotkb/$uniprotID.json"
@@ -118,12 +132,7 @@ function uniprotToGO(uniprotID)
 end
 
 goTerms = Dict()
-
-# uniprotIDs is a PDB:UniProt dictionary, with nothing as some values.
-# We need to filter the nothing values out for input into uniprotToGO()
-uniprots = filter(x -> !isnothing(last(x)), uniprotIDs)
-
-for x in uniprots
+for x in uniprotDict
     tmpGOs = []
     for y in last(x)
         tmp = uniprotToGO(y)
@@ -147,46 +156,13 @@ Here, we're finding all associated GO terms for each UniProt ID through the `uni
 
 The final output here is the `goTerms` dictionary, which links PDB ID (key) to an array of associated GO terms (value). In the case of multiple UniProt IDs, more than one outcome can be true at once. So if the first UniProt ID had associated GO terms but the second didn't, then the return is an array of just the GO terms from the first ID. Similarily, if the first UniProt ID had associated GO terms but the second was deleted from UniProtKB then the return is an array of GO terms including a `nothing` element.
 
-## Plotting analysis metadata
-```{julia}
-using CairoMakie, Colors
-
-IDAfig = Figure()
-
-# Total unique PDB IDs
-totalPDB = length(pdb)
-# PDB IDs without associated UniProt IDs
-totalWoUniprot = length(filter(x -> isnothing(last(x)), uniprotIDs))
-# PDB IDs with associated UniProt IDs that have been removed from UniProtKB
-totalDelUniprot
-# PDB IDs with associated UniProt IDs
-totalWithUniprot
-
-nothingCount = sum([count(isnothing, x) for x in values(goTerms)])
-
-IDAplotData = (x = [],
-               y = [],
-               z = [])
-
-barplot([1,2], [length(uniprotIDs), length(uniprotMissing)],
-        axis = (xticks = ([1,2],["Associated", "Missing"]),
-                xlabel = "UniProt IDs associated to PDB", ylabel = "Count", aspect = 1),
-        color = [colorant"rgb(100,143,255)", colorant"rgb(220,38,127)"],
-        strokewidth = 1)
-```
-
-
 ## Obtaining GO term metadata
 ```{julia}
-using DataFrames
-
 goList = collect(values(goTerms))
 filter!(x -> !isnothing(x), goList)
 goFreqs = countmap(collect(Iterators.flatten(goList)))
-
 goData = DataFrame(GO = collect(keys(goFreqs)),
                    freq = collect(values(goFreqs)))
-
 
 function getGoInfo(got)
     url = "https://www.ebi.ac.uk/QuickGO/services/ontology/go/terms/$got"
@@ -206,33 +182,53 @@ function getGoInfo(got)
     catch e
         println(e)
     end
-
 end
 
 goMetadata = [getGoInfo(x) for x in goData.GO]
 goData.desc = getindex.(goMetadata, 1)
 goData.aspect = getindex.(goMetadata, 2)
 
-goBP = filter(:aspect => x -> x == "biological_process", goData)
-goCC = filter(:aspect => x -> x == "cellular_component", goData)
-goMF = filter(:aspect => x -> x == "molecular_function", goData)
-
-sort!(goBP, :freq, rev = true)
-sort!(goCC, :freq, rev = true)
-sort!(goMF, :freq, rev = true)
+goBP, goCC, goMF = map(["biological_process", "cellular_component", "molecular_function"]) do aspect
+    df = filter(:aspect => x -> x == aspect, goData)
+    sort!(df, :freq, rev = true)
+end
 ```
 
-
+## GO term plots
 ```{julia}
-BP = barplot(10:-1:1, goBP.freq[1:10],direction= :x,
-        axis = (title = "BP",
-                yticks = (10:-1:1, goBP.desc[1:10])))
+titles = Dict(goBP => "BP", goCC => "CC", goMF => "MF")
+for df in [goBP, goCC, goMF]
+    f = Figure()
+    ax = Axis(f[1,1], yticks = (10:-1:1, df.desc[1:10]),
+              xlabel = "Frequency", title = titles[df])
+    barplot!(ax, 10:-1:1, df.freq[1:10], direction= :x,
+             color = colorant"rgb(100,143,255)", strokewidth = 1)
+    display(f)
+end
+```
 
-CC = barplot(10:-1:1, goCC.freq[1:10],direction= :x,
-        axis = (title = "CC",
-                yticks = (10:-1:1, goCC.desc[1:10])))
+## Plotting analysis metadata
+```{julia}
+#IDAfig = Figure()#
+#
+# Total unique PDB IDs
+#totalPDB = length(pdb)
+# PDB IDs without associated UniProt IDs
+#totalWoUniprot = length(missingUniprot)
+# PDB IDs with associated UniProt IDs that have been removed from UniProtKB
+#totalDelUniprot
+# PDB IDs with associated UniProt IDs
+#totalWithUniprot
 
-MF = barplot(10:-1:1, goMF.freq[1:10],direction= :x,
-        axis = (title = "CC",
-                yticks = (10:-1:1, goMF.desc[1:10])))
+#nothingCount = sum([count(isnothing, x) for x in values(goTerms)])
+
+#IDAplotData = (x = [],
+#               y = [],
+#               z = [])
+
+#barplot([1,2], [length(uniprotDict), length(uniprotMissing)],
+#        axis = (xticks = ([1,2],["Associated", "Missing"]),
+#                xlabel = "UniProt IDs associated to PDB", ylabel = "Count", aspect = 1),
+#        color = [colorant"rgb(100,143,255)", colorant"rgb(220,38,127)"],
+#        strokewidth = 1)
 ```
