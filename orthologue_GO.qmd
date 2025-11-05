@@ -5,6 +5,17 @@ engine: julia
 
 IBM colour scheme.
 
+This analysis focuses on extracting GO terms from PDB entries identified as structural orthologues of a Mep through Foldseek. It uses REST APIs to:
+
+1. Gather all UniProt IDs associated with a PDB entry, and resolves obsolete PDB entries.
+
+2. Gather all GO terrms associated with a UniProt ID, and skips IDs that have been deleted from UniProtKB.
+
+3. Gathers metadata (description + aspect) of each GO term.
+
+
+
+## Setup
 ```{julia}
 using CSV, DataFrames, PhyloNetworks
 dir = expanduser(joinpath("~", "oneDrive", "projects", "effectome", "datasets"))
@@ -19,6 +30,7 @@ filter!(row -> row.Column1 in nodes, topHits)
 pdb = unique(uppercase.(getindex.(split.(topHits.Column2, "-"),1)))
 ```
 
+## Obtaining UniProt IDs from PDB ID
 ```{julia}
 using HTTP, JSON3
 
@@ -84,6 +96,7 @@ Given our list of PDB IDs, we want to find the associated UniProt ID(s) for each
 
 It's worth noting that currently the best way to query the failed associations is through filtering by `nothing`, however this will lump those failing by outcome 2 and 4 together. In this dataset, outcome 4 does not occur (AFAIK) so there is no need to alter the function. However, you might want to alter the `pdbToUniprot` and `checkObsoleteID` functions to split them if you see significant failures by both outcomes.
 
+## Obtaining GO terms from UniProt ID
 ```{julia}
 function uniprotToGO(uniprotID)
     url = "https://rest.uniprot.org/uniprotkb/$uniprotID.json"
@@ -134,6 +147,7 @@ Here, we're finding all associated GO terms for each UniProt ID through the `uni
 
 The final output here is the `goTerms` dictionary, which links PDB ID (key) to an array of associated GO terms (value). In the case of multiple UniProt IDs, more than one outcome can be true at once. So if the first UniProt ID had associated GO terms but the second didn't, then the return is an array of just the GO terms from the first ID. Similarily, if the first UniProt ID had associated GO terms but the second was deleted from UniProtKB then the return is an array of GO terms including a `nothing` element.
 
+## Plotting analysis metadata
 ```{julia}
 using CairoMakie, Colors
 
@@ -162,7 +176,63 @@ barplot([1,2], [length(uniprotIDs), length(uniprotMissing)],
 ```
 
 
+## Obtaining GO term metadata
+```{julia}
+using DataFrames
+
+goList = collect(values(goTerms))
+filter!(x -> !isnothing(x), goList)
+goFreqs = countmap(collect(Iterators.flatten(goList)))
+
+goData = DataFrame(GO = collect(keys(goFreqs)),
+                   freq = collect(values(goFreqs)))
+
+
+function getGoInfo(got)
+    url = "https://www.ebi.ac.uk/QuickGO/services/ontology/go/terms/$got"
+    try
+        response = HTTP.get(url)
+        body = JSON3.read(String(response.body))
+        if body.numberOfHits > 1
+            println("More than one result for $got")
+            println(got)
+        end
+        result = body.results[1]
+        if result.isObsolete == true
+            return nothing, nothing
+        else
+            return result.name, result.aspect
+        end
+    catch e
+        println(e)
+    end
+
+end
+
+goMetadata = [getGoInfo(x) for x in goData.GO]
+goData.desc = getindex.(goMetadata, 1)
+goData.aspect = getindex.(goMetadata, 2)
+
+goBP = filter(:aspect => x -> x == "biological_process", goData)
+goCC = filter(:aspect => x -> x == "cellular_component", goData)
+goMF = filter(:aspect => x -> x == "molecular_function", goData)
+
+sort!(goBP, :freq, rev = true)
+sort!(goCC, :freq, rev = true)
+sort!(goMF, :freq, rev = true)
+```
+
 
 ```{julia}
-filter(x -> isnothing(last(x)), goTerms)
+BP = barplot(10:-1:1, goBP.freq[1:10],direction= :x,
+        axis = (title = "BP",
+                yticks = (10:-1:1, goBP.desc[1:10])))
+
+CC = barplot(10:-1:1, goCC.freq[1:10],direction= :x,
+        axis = (title = "CC",
+                yticks = (10:-1:1, goCC.desc[1:10])))
+
+MF = barplot(10:-1:1, goMF.freq[1:10],direction= :x,
+        axis = (title = "CC",
+                yticks = (10:-1:1, goMF.desc[1:10])))
 ```
