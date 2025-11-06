@@ -4,6 +4,7 @@ engine: julia
 ---
 ## Import Uniprot ID CSVs
 ```{julia}
+using CSV, DataFrames, CairoMakie, StatsBase
 uniprotSOPath = joinpath(@__DIR__, "_output", "data", "structural_orthologues_Uniprot_IDs.csv")
 soDF = CSV.read(uniprotSOPath, DataFrame)
 soUniprots = unique(soDF.uniprot)
@@ -14,29 +15,48 @@ mepUniprots = unique(mepDF.Column1)
 ```
 ## Retrieve UniProtKB annotations
 ```{julia}
+using HTTP, JSON3
 function getUniprotAnnotation(uniprotID)
     url = "https://rest.uniprot.org/uniprotkb/$uniprotID.json"
     try
         response = HTTP.get(url, ["Accept-Encoding" => "identity"])
         body = JSON3.read(String(response.body))
-        println(uniprotID)
         return body.annotationScore
     catch err
         println("API fetch failed for $uniprotID")
     end
 end
-
- soAnnotationScores = [getUniprotAnnotation(x) for x in soUniprots]
- println("Structural orthologue scores found.")
- mepAnnotationScores = [getUniprotAnnotation(x) for x in mepUniprots]
+# Structural orthologue annotation scores (SAS)
+# Mep annotation scores (MAS)
+ SAS = [getUniprotAnnotation(x) for x in soUniprots]
+ MAS = [getUniprotAnnotation(x) for x in mepUniprots]
 ```
 
 ## Plotting annotation score
 
 ```{julia}
+x = [0, 1, 2, 3, 4, 5]
+function plotAnnotationScores(scores)
+    y = Vector(undef, length(x))
+    freqs = countmap(scores)
+    for s in x
+        try
+            y[s+1] = freqs[s]
+        catch
+            y[s+1] = 0
+        end
+    end
+    return y
+end
 
-xData = vcat(fill(1, length(mepAnnotationScores)),
-             fill(2, length(soAnnotationScores)))
-
-hist(soAnnotationScores)
+titles = Dict(MAS => "Meps", SAS => "Structural orthologues")
+for ds in [MAS, SAS]
+    f = Figure()
+    ax = Axis(f[1,1], ylabel = "Frequency", title = titles[ds],
+        xticks = 0:1:6, xlabel = "UniProt Annotation Score")
+    ylims!(ax, -10, 410)
+    barplot!(ax, x, plotAnnotationScores(ds),
+        color = colorant"rgb(100,143,255)", strokewidth = 1)
+    display(f)
+end
 ```

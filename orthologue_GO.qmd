@@ -1,15 +1,17 @@
 ---
-title: "Analysis GO terms of structural orthologues"
+title: "GO term analysis"
 engine: julia
 ---
 
-This analysis focuses on extracting GO terms from PDB entries identified as structural orthologues of a Mep through Foldseek. It uses REST APIs to:
+This analysis focuses on extracting GO terms from PDB entries identified as structural orthologues to at least one Mep. Structural orthologues were identified via [Foldseek](https://doi.org/10.1038/s41587-023-01773-0). This analysis uses REST APIs to:
 
 1. Gather all UniProt IDs associated with a PDB entry, and resolves obsolete PDB entries.
 
 2. Gather all GO terrms associated with a UniProt ID, and skips IDs that have been deleted from UniProtKB.
 
 3. Gathers metadata (description + aspect) of each GO term.
+
+Plots are then generated for each GO term aspect, showing the most frequent 10 terms.
 
 ## Setup
 ```{julia}
@@ -78,13 +80,25 @@ function pdbToUniprot(pdbID)
     end
 end
 
-uniprotDict = Dict()
-for elem in pdb
-    tmpIDs = pdbToUniprot(elem)
-    uniprotDict[elem] = tmpIDs
+uniprotPath = joinpath(@__DIR__, "_output", "data", "structural_orthologues_Uniprot_IDs.csv")
+
+# API calls only run if UniProt IDs are not already written to file.
+if isfile(uniprotPath) == true
+    uniprotDF = CSV.read(uniprotPath, DataFrame)
+    uniprotDict = Dict(key.pdb => df.uniprot
+        for (key, df) in pairs(groupby(uniprotDF, :pdb)))
+else
+    uniprotDict = Dict()
+    for elem in pdb
+        tmpIDs = pdbToUniprot(elem)
+        uniprotDict[elem] = tmpIDs
+    end
+    filter!(x -> !isnothing(last(x)), uniprotDict)
+    uniprotDF = DataFrame(
+        pdb = [key for (key, val) in uniprotDict for x in val],
+        uniprot = collect(Iterators.flatten(values(uniprotDict))))
+    CSV.write(uniprotPath, uniprotDF)
 end
-missingUniprot = filter(x -> isnothing(last(x)), uniprotDict)
-filter!(x -> !isnothing(last(x)), uniprotDict)
 ```
 
 Given our list of PDB IDs, we want to find the associated UniProt ID(s) for each PDB ID. We're achieving this through the `pdbToUniprot` function which utilises the PDB's REST API to query each PDB ID individually. There are four possible outcomes:
@@ -98,16 +112,6 @@ Given our list of PDB IDs, we want to find the associated UniProt ID(s) for each
 4. The PDB ID is **not** found in the PDB. The `checkObsoleteID` function is run, but no new PDB ID can be found. The return is `nothing`.
 
 It's worth noting that currently the best way to query the failed associations is through filtering by `nothing`, however this will lump those failing by outcome 2 and 4 together. In this dataset, outcome 4 does not occur (AFAIK) so there is no need to alter the function. However, you might want to alter the `pdbToUniprot` and `checkObsoleteID` functions to split them if you see significant failures by both outcomes.
-
-## Exporting UniProt IDs to CSV
-```{julia}
-uniprotDF = DataFrame(
-    pdb = [key for (key, val) in uniprotDict for x in val],
-    uniprot = collect(Iterators.flatten(values(uniprotDict)))
-)
-uniprotPath = joinpath(@__DIR__, "_output", "data", "structural_orthologues_Uniprot_IDs.csv")
-CSV.write(uniprotPath, uniprotDF)
-```
 
 ## Obtaining GO terms from UniProt ID
 
@@ -211,14 +215,22 @@ end
 ```{julia}
 #IDAfig = Figure()#
 #
+
+
+
+totalPDB = length(pdb)
+woUniprot = totalPDB - length(uniprotDict)
+wDelUniprot = length(filter(x -> !isnothing(last(x)), goTerms))
+wUniprot = totalPDB - (woUniprot + )
+
+length(filter(x -> !isnothing(last(x)), goTerms))
+
 # Total unique PDB IDs
-#totalPDB = length(pdb)
 # PDB IDs without associated UniProt IDs
-#totalWoUniprot = length(missingUniprot)
 # PDB IDs with associated UniProt IDs that have been removed from UniProtKB
-#totalDelUniprot
 # PDB IDs with associated UniProt IDs
-#totalWithUniprot
+
+
 
 #nothingCount = sum([count(isnothing, x) for x in values(goTerms)])
 
