@@ -1,9 +1,10 @@
 ---
 title: "Annotating structural phylogeny"
 ---
+
 This analysis attempts to annotate a structural phylogeny tree of _Magnaporthe oryzae_ effectors. The tree was generated using FoldTree, using a pre-filtered list of Meps.
+
 ### Setup
-Currently I'm visualising the tree using ITOL, and therefore am saving annotation datasets as `.txt` files to upload. ITOL annotation files use a custom header depending on the annotation type. Below outlines header generation function depending on the annotation type (binary or colour-scale).
 ```{r}
 library(ape)
 
@@ -52,8 +53,9 @@ cs_header <- function(name, shapes, colours, labels){
 }
 ```
 
+Currently visualising the tree using ITOL, and therefore am saving annotation datasets as `.txt` files to upload. ITOL annotation files use a custom header depending on the annotation type. These functions generates headers depending on the annotation type (binary or colour-scale).
+
 ### Tree nodes
-The below section reads the Newick tree as input and generates a map dataframe between MGG and the unique prefix ID appended during AlphaFold2 structural prediction.
 ```{r}
 dir <- file.path(path.expand('~'), "oneDrive", "projects", "effectome", "datasets")
 tree <- ladderize(read.tree(file.path(dir, "50_avg-pLDDT_rooted.nwk")))
@@ -65,18 +67,7 @@ tree_map <- data.frame(
 )
 ```
 
-### MAX effectors
-This section just identifies known and predicted MAX effectors within the dataset used in the phylogeny.
-```{r}
-#max_mgg contains duplicates, but max_mgg_tree only returns unique values intersecting.
-max_mgg <- read.csv(file.path(dir, "MAX_MGG.csv"), header = FALSE)$V1
-max_mgg_tree <- intersect(max_mgg, tree_map$mgg)
-max_nodes <- tree_map$node[tree_map$mgg %in% max_mgg_tree]
-max_colour <- rgb(194, 106, 119, maxColorValue = 255)
-out_max_path <- file.path(dir, "MAX.itol.txt")
-writeLines(binary_header("MAX", max_colour), out_max_path)
-write(paste(max_nodes, 1, sep = ","), file = out_max_path, append = TRUE)
-```
+The map DataFrame is important when trying converting MGG numbers to nodes, which have an AlphaFold2 identifier appended to the front of the MGG ID.
 
 ### Foldseek
 We want to annotate the tree with best Foldseek match (lowest E-value) for each structure. In some cases a structure can have two matches with the same E-value, in such a scenario it doesn't matter which is kept for the annotation as only the E-value is shown.
@@ -108,5 +99,21 @@ writeLines(cs_header("E-value",
            paste(fs_labs, collapse = ",")), out_fs_path)
 write.table(foldseek_data, file = out_fs_path, sep = ",", quote = FALSE,
             row.names = FALSE, col.names = FALSE, append = TRUE)
+```
+
+## Annotate specific MGGs from CSV
+```{r}
+csvToItol <- function(file, name){
+    mgg <- read.csv(file.path(dir, file), header = FALSE)$V1
+    mggsInTree <- intersect(mgg, tree_map$mgg)
+    nodes <- tree_map$node[tree_map$mgg %in% mggsInTree]
+    colour <- rgb(194, 106, 119, maxColorValue = 255)
+    out_path <- file.path(dir, sprintf("%s.itol.txt", name))
+    writeLines(binary_header(name, colour), out_path)
+    write(paste(nodes, 1, sep = ","), file = out_path, append = TRUE)
+}
+
+csvToItol("MAX_MGG.csv","MAX")
+csvToItol("carbMetabGO.csv", "carbMetabGO")
 ```
 

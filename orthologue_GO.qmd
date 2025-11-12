@@ -20,6 +20,7 @@ Pkg.activate(@__DIR__)
 Pkg.instantiate()
 using CSV, DataFrames, PhyloNetworks, HTTP, JSON3, StatsBase, CairoMakie
 ```
+We initially want to load the Julia project containing dependent modules. The Julia project can take a while to load and contains all modules required for all Julia scripts in this repository.
 
 ## Filtering PDBs
 ```{julia}
@@ -28,6 +29,7 @@ fsRaw = CSV.read(joinpath(dir, "foldseek.tsv"), DataFrame, delim = "\t", header 
 sort!(fsRaw, :Column11)
 grpByMGG = groupby(fsRaw, :Column1)
 topHits = combine(first, grpByMGG)
+filter!(:Column11 => x -> x < 0.01, topHits)
 
 tree = readnewick(joinpath(dir, "50_avg-pLDDT_rooted.nwk"))
 nodes = tiplabels(tree)
@@ -35,6 +37,8 @@ filter!(row -> row.Column1 in nodes, topHits)
 pdb = unique(uppercase.(getindex.(split.(topHits.Column2, "-"),1)))
 println(length(pdb), " PDB IDs found.")
 ```
+
+The PDBs are filtered by E-value and by associtated MGGs being within the tree.
 
 ## Obtaining UniProt IDs from PDB ID
 ```{julia}
@@ -191,6 +195,8 @@ end
 goMetadata = [getGoInfo(x) for x in goData.GO]
 goData.desc = getindex.(goMetadata, 1)
 goData.aspect = getindex.(goMetadata, 2)
+filter!(row -> all(!isnothing, values(row)), goData)
+goData.desc = [length(s) > 40 ? s[1:37] * "..." : s for s in goData.desc]
 
 goBP, goCC, goMF = map(["biological_process", "cellular_component", "molecular_function"]) do aspect
     df = filter(:aspect => x -> x == aspect, goData)
